@@ -1,0 +1,710 @@
+/*
+ * content.js – Kernlogik und Oberfläche der Extension.
+ *
+ * Ablauf:
+ *  1. Chat (Text, Code, Artefakte), Anhänge und Entwurf messen und Tokens schätzen.
+ *  2. Fertige Antworten als "Turn" speichern (Kontext + Ausgabe = Kosten).
+ *  3. Über Zeitfenster aufsummieren -> Nutzungslimits (5 Std., Woche, ...).
+ *  4. Fehlermeldungen der Seite erkennen ("Limit erreicht", "Chat zu lang") und
+ *     daraus Budget und Offset für Unsichtbares kalibrieren.
+ *  5. Ring + "Draft / Chat" über der Textbox, Klick öffnet die genaue Ansicht.
+ */
+(() => {
+  'use strict';
+
+  const CFG = window.TX_CONFIG;
+  const P = CFG.providers.find((p) =>
+    p.hosts.some((h) => location.hostname === h || location.hostname.endsWith('.' + h))
+  );
+  if (!P || window.__txLoaded) return;
+  window.__txLoaded = true;
+  const S = P.selectors;
+  const T = CFG.timing;
+  const E = CFG.estimator;
+
+  // ---------------------------------------------------------------- Hilfen
+  const qsa = (sel) => {
+    try {
+      return Array.from(document.querySelectorAll(sel));
+    } catch (e) {
+      return [];
+    }
+  };
+  const qs = (sel) => {
+    try {
+      return document.querySelector(sel);
+    } catch (e) {
+      return null;
+    }
+  };
+  const txt = (el) => (el ? (el.innerText !== undefined ? el.innerText : el.textContent) || '' : '');
+  const outermost = (els) => els.filter((e) => !els.some((o) => o !== e && o.contains(e)));
+  const median = (a) => {
+    if (!a || !a.length) return null;
+    const s = [...a].sort((x, y) => x - y);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  const nf = new Intl.NumberFormat('de-DE');
+  const fmtFull = (n) => nf.format(Math.round(n));
+  const fmtK = (n) => {
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace('.', ',') + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1).replace('.', ',') + 'k';
+    return String(Math.round(n));
+  };
+  const fmtWin = (n) => (n >= 1e6 && n % 1e6 === 0 ? n / 1e6 + 'M' : fmtK(n));
+  const fmtDuration = (ms) => {
+    const min = Math.max(0, Math.round(ms / 60000));
+    if (min >= 1440) return `${Math.floor(min / 1440)} T. ${Math.floor((min % 1440) / 60)} Std.`;
+    if (min >= 60) return `${Math.floor(min / 60)} Std. ${min % 60} Min.`;
+    return `${min} Min.`;
+  };
+  const level = (pct) => (pct >= CFG.thresholds.crit ? 'crit' : pct >= CFG.thresholds.warn ? 'warn' : 'ok');
+  const h = (tag, cls, text) => {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  };
+
+  // ------------------------------------------------------------- Speicher
+  const store = {
+    get: (keys) => new Promise((r) => chrome.storage.local.get(keys, r)),
+    set: (obj) => new Promise((r) => chrome.storage.local.set(obj, r))
+  };
+  const state = { tx_settings: {}, tx_calib: {}, tx_turns: [], tx_chats: {} };
+  let loaded = false;
+  let chain = Promise.resolve();
+
+  // Lesen-Ändern-Schreiben, nacheinander, damit mehrere Tabs sich nicht überschreiben.
+  function mutate(key, fn) {
+    chain = chain
+      .then(async () => {
+        const d = await store.get(key);
+        const v = fn(d[key]);
+        await store.set({ [key]: v });
+        state[key] = v;
+      })
+      .catch(() => {});
+    return chain;
+  }
+  function persist(key) {
+    chain = chain.then(() => store.set({ [key]: state[key] })).catch(() => {});
+  }
+
+  // ---------------------------------------------------- Einstellungen/Werte
+  function cfgNow() {
+    const s = state.tx_settings[P.id] || {};
+    const plan = P.plans.find((p) => p.id === (s.plan || P.defaultPlan)) || P.plans[0];
+    const calib = state.tx_calib[P.id] || {};
+    const win = Number(s.contextWindow) || plan.contextWindow || P.defaultContextWindow;
+    const manualOffset = s.offset !== undefined && s.offset !== '' && s.offset !== null ? Number(s.offset) : null;
+    const calOffset = median(calib.offsets);
+    const offset = manualOffset !== null ? manualOffset : calOffset !== null ? calOffset : P.defaultOffset;
+    return { plan, win, offset, offsetCalibrated: manualOffset !== null || calOffset !== null, calib };
+  }
+
+  // ------------------------------------------------------ Token-Schätzung
+  function looksGerman(text) {
+    const de = (text.match(/\b(der|die|das|und|ist|nicht|ich|ein|eine|mit|für|auf|zu|den|dem|von)\b/gi) || []).length;
+    const en = (text.match(/\b(the|and|is|not|of|to|with|for|that|this|you|are|in)\b/gi) || []).length;
+    return de > en;
+  }
+  function estimateTokens(text, isCode) {
+    if (!text) return 0;
+    let cpt = E.codeCharsPerToken;
+    if (!isCode) cpt = looksGerman(text) ? E.germanCharsPerToken : E.englishCharsPerToken;
+    let wide = 0;
+    for (const ch of text) if (ch.charCodeAt(0) > 0x2fff) wide++;
+    return Math.ceil((text.length - wide) / cpt + wide * 1.2);
+  }
+
+  const msgCache = new WeakMap();
+  function measureMessage(el) {
+    const len = el.textContent.length;
+    const c = msgCache.get(el);
+    if (c && c.len === len) return c;
+    let code = 0;
+    el.querySelectorAll('pre').forEach((p) => {
+      code += estimateTokens(txt(p), true);
+    });
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('pre').forEach((n) => n.remove());
+    const prose = estimateTokens(clone.textContent, false) + E.messageOverhead;
+    const r = { len, prose, code };
+    msgCache.set(el, r);
+    return r;
+  }
+
+  function measureChat() {
+    const users = outermost(qsa(S.user));
+    const asst = outermost(qsa(S.assistant));
+    let prose = 0;
+    let code = 0;
+    let lastAsst = 0;
+    users.forEach((el) => {
+      const m = measureMessage(el);
+      prose += m.prose;
+      code += m.code;
+    });
+    asst.forEach((el, i) => {
+      const m = measureMessage(el);
+      prose += m.prose;
+      code += m.code;
+      if (i === asst.length - 1) lastAsst = m.prose + m.code;
+    });
+    let artifacts = 0;
+    if (S.artifact) outermost(qsa(S.artifact)).forEach((el) => (artifacts += estimateTokens(txt(el), true)));
+    return { prose, code, artifacts, users: users.length, asst: asst.length, lastAsst };
+  }
+
+  function draftTokens() {
+    const inp = qs(S.input);
+    if (!inp) return 0;
+    const text = inp.tagName === 'TEXTAREA' || inp.tagName === 'INPUT' ? inp.value : txt(inp);
+    return estimateTokens((text || '').trim(), false);
+  }
+
+  // -------------------------------------------------------------- Anhänge
+  const TEXT_EXT = /\.(txt|md|csv|tsv|json|xml|yml|yaml|toml|ini|log|html?|css|scss|js|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cpp|hpp|cs|php|sh|sql|r|lua)$/i;
+  let pending = [];
+  const seen = new Set();
+  const fileKey = (f) => `${f.name}|${f.size}|${f.lastModified}`;
+
+  async function describeFile(file) {
+    const name = file.name;
+    const type = file.type || '';
+    if (type.startsWith('image/')) {
+      let tokens = Math.ceil(file.size / 600);
+      try {
+        const bmp = await createImageBitmap(file);
+        tokens = E.imageTokens(P.id, bmp.width, bmp.height);
+        if (bmp.close) bmp.close();
+      } catch (e) {
+        /* Fallback bleibt die Größenschätzung. */
+      }
+      return { name, kind: 'Bild', tokens, approx: true };
+    }
+    if (type === 'application/pdf' || /\.pdf$/i.test(name)) {
+      let pages = 1;
+      try {
+        const buf = await file.slice(0, 40 * 1024 * 1024).arrayBuffer();
+        const raw = new TextDecoder('latin1').decode(buf);
+        pages = Math.max(1, (raw.match(/\/Type\s*\/Page[^s]/g) || []).length);
+      } catch (e) {
+        pages = Math.max(1, Math.round(file.size / 60000));
+      }
+      return { name, kind: 'PDF', tokens: pages * E.pdfTokensPerPage, approx: true, pages };
+    }
+    if (type.startsWith('text/') || type === 'application/json' || TEXT_EXT.test(name)) {
+      const text = await file.slice(0, 20 * 1024 * 1024).text();
+      const isCode = /\.(js|jsx|ts|tsx|py|rb|go|rs|java|kt|swift|c|h|cpp|hpp|cs|php|sh|sql|css|scss|json|xml|html?)$/i.test(name);
+      return { name, kind: 'Text', tokens: estimateTokens(text, isCode) + 20, approx: false };
+    }
+    return { name, kind: 'Datei', tokens: Math.min(Math.ceil(file.size / 4), 60000), approx: true };
+  }
+
+  async function addFiles(files) {
+    for (const f of files) {
+      const k = fileKey(f);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      try {
+        pending.push(await describeFile(f));
+      } catch (e) {
+        pending.push({ name: f.name, kind: 'Datei', tokens: Math.ceil(f.size / 4), approx: true });
+      }
+    }
+    scheduleRefresh();
+  }
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t && t.tagName === 'INPUT' && t.type === 'file' && t.files && t.files.length) addFiles(Array.from(t.files));
+  }, true);
+  document.addEventListener('drop', (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files;
+    if (f && f.length) addFiles(Array.from(f));
+  }, true);
+  document.addEventListener('paste', (e) => {
+    const f = e.clipboardData && e.clipboardData.files;
+    if (f && f.length) addFiles(Array.from(f));
+  }, true);
+  document.addEventListener('input', () => scheduleRefresh(), true);
+
+  // ------------------------------------------------------ Chat-Schlüssel
+  const chatKey = () => `${P.id}:${location.pathname}`;
+  let lastKey = chatKey();
+  let lastPath = location.pathname;
+  let migrateFrom = null;
+
+  function checkNavigation() {
+    const key = chatKey();
+    if (key === lastKey) return;
+    if (P.newChatPath.test(lastPath)) {
+      migrateFrom = lastKey; // Erste Nachricht in neuem Chat: Pfad wechselt auf /chat/<id>.
+    } else {
+      pending = [];
+      seen.clear();
+      migrateFrom = null;
+    }
+    lastKey = key;
+    lastPath = location.pathname;
+    scheduleSettle();
+  }
+
+  // --------------------------------------------------------- Berechnungen
+  function compute() {
+    const c = cfgNow();
+    const m = measureChat();
+    const chat = state.tx_chats[chatKey()] || { attach: [] };
+    const attach = chat.attach.reduce((a, f) => a + f.tokens, 0);
+    const pend = pending.reduce((a, f) => a + f.tokens, 0);
+    const draftText = draftTokens();
+    const visible = m.prose + m.code + m.artifacts + attach;
+    const chatTotal = visible + c.offset;
+    const draft = draftText + pend;
+    const used = chatTotal + draft;
+    const range = c.offsetCalibrated ? E.rangeCalibrated : E.rangeUncalibrated;
+    return {
+      cfg: c,
+      m,
+      attach,
+      attachCount: chat.attach.length,
+      pend,
+      pendCount: pending.length,
+      draftText,
+      draft,
+      visible,
+      chatTotal,
+      used,
+      window: c.win,
+      pct: Math.min(1, used / c.win),
+      low: used * (1 - range),
+      high: used * (1 + range),
+      calibrated: c.offsetCalibrated,
+      windows: P.windows.map((w) => usageFor(w, c))
+    };
+  }
+
+  function usageFor(w, c) {
+    const now = Date.now();
+    const mine = state.tx_turns.filter((t) => t.p === P.id && t.ts > now - w.ms);
+    const used = mine.reduce((a, t) => a + t.cost, 0);
+    const start = mine.length ? Math.min(...mine.map((t) => t.ts)) : null;
+    const samples = (c.calib.budgets || {})[w.id];
+    const calBudget = median(samples);
+    const budget = calBudget !== null ? calBudget : (c.plan.budget || {})[w.id] || 1;
+    return {
+      w,
+      used,
+      budget,
+      calibrated: calBudget !== null,
+      pct: Math.min(1, used / budget),
+      resetIn: start ? start + w.ms - now : null,
+      turns: mine.length
+    };
+  }
+
+  // ------------------------------------------------ Turns und Abrechnung
+  let settleTimer;
+  const baseline = new Map();
+  function scheduleSettle() {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(onSettle, T.settleMs);
+  }
+
+  function onSettle() {
+    if (!loaded) return scheduleSettle();
+    if (S.streaming && qs(S.streaming)) return scheduleSettle(); // Antwort läuft noch.
+    const key = chatKey();
+    const m = measureChat();
+    let b = baseline.get(key);
+    if (!b) {
+      // Erster Blick auf diesen Chat: Bestand ist kein Verbrauch.
+      const fresh = migrateFrom && m.users <= 1 && m.asst <= 1;
+      if (fresh) {
+        const old = state.tx_chats[migrateFrom];
+        if (old) {
+          state.tx_chats[key] = old;
+          delete state.tx_chats[migrateFrom];
+          persist('tx_chats');
+        }
+        b = { users: 0, asst: 0 };
+      } else {
+        b = { users: m.users, asst: m.asst };
+      }
+      baseline.set(key, b);
+      migrateFrom = null;
+    }
+    if (m.users > b.users) {
+      if (pending.length) {
+        const ch = (state.tx_chats[key] = state.tx_chats[key] || { attach: [] });
+        ch.attach.push(...pending);
+        persist('tx_chats');
+        pending = [];
+        seen.clear();
+      }
+      b.users = m.users;
+    }
+    if (m.asst > b.asst) {
+      const c = compute();
+      const out = c.m.lastAsst;
+      const ctxBefore = Math.max(0, c.chatTotal - out);
+      const cost = Math.round(ctxBefore + out * CFG.usage.outputWeight);
+      const turn = { ts: Date.now(), p: P.id, chat: key, ctx: Math.round(c.chatTotal), out, cost };
+      state.tx_turns.push(turn);
+      mutate('tx_turns', (arr) => {
+        const a = (arr || []).concat([turn]);
+        return a.slice(-CFG.usage.historyLimit);
+      });
+      b.asst = m.asst;
+    }
+    scheduleRefresh();
+  }
+
+  // ------------------------------------------------- Limit-Erkennung/Kalib
+  const lastNotice = {};
+  let lastEvent = null;
+
+  function onNotice(kind, text) {
+    const k = `${kind}|${P.id}`;
+    if (Date.now() - (lastNotice[k] || 0) < T.noticeCooldownMs) return;
+    lastNotice[k] = Date.now();
+    const c = compute();
+    if (kind === 'context') {
+      const sample = Math.round(Math.min(Math.max(0, c.window - (c.visible + c.draft)), c.window * 0.5));
+      mutate('tx_calib', (cal) => {
+        cal = cal || {};
+        const e = (cal[P.id] = cal[P.id] || {});
+        e.offsets = (e.offsets || []).concat([sample]).slice(-CFG.usage.calibSamples);
+        return cal;
+      });
+      lastEvent = { kind, ts: Date.now(), note: `Offset für Unsichtbares auf ~${fmtK(sample)} kalibriert` };
+    } else {
+      const weekly = /week|woche|täglich|daily|24/i.test(text);
+      const w = weekly ? P.windows.find((x) => x.weekly) || P.windows[P.windows.length - 1] : P.windows[0];
+      const u = usageFor(w, c.cfg);
+      if (u.used > 0) {
+        mutate('tx_calib', (cal) => {
+          cal = cal || {};
+          const e = (cal[P.id] = cal[P.id] || {});
+          e.budgets = e.budgets || {};
+          e.budgets[w.id] = (e.budgets[w.id] || []).concat([Math.round(u.used)]).slice(-CFG.usage.calibSamples);
+          return cal;
+        });
+        lastEvent = { kind, ts: Date.now(), note: `Budget „${w.label}“ auf ~${fmtK(u.used)} kalibriert` };
+      }
+    }
+    setTimeout(scheduleRefresh, 400);
+  }
+
+  const messageSel = `${S.user}, ${S.assistant}`;
+  function scanNode(node) {
+    if (!node || node.nodeType !== 1 || node.closest('.tx-ui')) return;
+    try {
+      if (node.closest(messageSel)) return; // Chat-Inhalte sind keine Fehlermeldungen.
+    } catch (e) {
+      /* ungültiger Selektor */
+    }
+    const text = (node.textContent || '').slice(0, 400);
+    if (text.length < 12) return;
+    if (P.patterns.context.test(text)) onNotice('context', text);
+    else if (P.patterns.usage.test(text)) onNotice('usage', text);
+  }
+
+  // ------------------------------------------------------------------ UI
+  const ui = { root: null, panel: null, label: null, ring: null, showBreakdown: false, open: false };
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const RING_C = 2 * Math.PI * 9;
+
+  function buildUI() {
+    const root = h('div', 'tx-ui tx-root');
+    root.hidden = true;
+    const label = h('div', 'tx-label');
+    const lDraft = h('span', 'tx-l-draft');
+    const lChat = h('span', 'tx-l-chat');
+    label.append(lDraft, lChat);
+    const btn = h('button', 'tx-ring-btn');
+    btn.type = 'button';
+    btn.title = 'Klicken für die genaue Ansicht';
+    const svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('class', 'tx-ring');
+    const track = document.createElementNS(SVGNS, 'circle');
+    const prog = document.createElementNS(SVGNS, 'circle');
+    [track, prog].forEach((c) => {
+      c.setAttribute('cx', '12');
+      c.setAttribute('cy', '12');
+      c.setAttribute('r', '9');
+      c.setAttribute('fill', 'none');
+    });
+    track.setAttribute('class', 'tx-ring-track');
+    prog.setAttribute('class', 'tx-ring-prog');
+    prog.setAttribute('stroke-dasharray', String(RING_C));
+    svg.append(track, prog);
+    btn.append(svg);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePanel();
+    });
+    root.append(label, btn);
+
+    const panel = h('div', 'tx-ui tx-panel');
+    panel.hidden = true;
+    panel.addEventListener('click', (e) => e.stopPropagation());
+
+    document.documentElement.append(root, panel);
+    Object.assign(ui, { root, panel, label, lDraft, lChat, ring: prog, btn });
+    document.addEventListener('click', () => ui.open && togglePanel(false));
+    document.addEventListener('keydown', (e) => e.key === 'Escape' && ui.open && togglePanel(false));
+  }
+
+  function togglePanel(force) {
+    ui.open = force === undefined ? !ui.open : force;
+    ui.panel.hidden = !ui.open;
+    if (ui.open) refresh();
+  }
+
+  let posQueued = false;
+  function position() {
+    if (posQueued) return;
+    posQueued = true;
+    requestAnimationFrame(() => {
+      posQueued = false;
+      const inp = qs(S.input);
+      ui.root.hidden = !inp;
+      if (!inp) {
+        ui.panel.hidden = true;
+        return;
+      }
+      ui.panel.hidden = !ui.open;
+      const comp =
+        P.id === 'chatgpt'
+          ? inp.closest(S.composer) || inp.closest('form') || inp
+          : (S.composer && qs(S.composer)) || inp.closest('form') || inp;
+      const r = comp.getBoundingClientRect();
+      let left;
+      let top;
+      if (!r.width) {
+        if (P.id === 'chatgpt') {
+          ui.root.hidden = true;
+          ui.panel.hidden = true;
+          return;
+        }
+        left = window.innerWidth - 16;
+        top = window.innerHeight - 90;
+      } else {
+        left = r.right - 4;
+        top = r.top - 30;
+      }
+      ui.root.style.left = `${left}px`;
+      ui.root.style.top = `${Math.max(4, top)}px`;
+      ui.panel.style.left = `${left}px`;
+      ui.panel.style.bottom = `${Math.max(8, window.innerHeight - top + 8)}px`;
+    });
+  }
+
+  function bar(pct, extra) {
+    const wrap = h('div', 'tx-bar' + (extra ? ' ' + extra : ''));
+    const fill = h('div', `tx-bar-fill tx-${level(pct)}`);
+    fill.style.width = `${Math.max(1, Math.round(pct * 100))}%`;
+    wrap.append(fill);
+    return wrap;
+  }
+  function line(a, b) {
+    const el = h('div', 'tx-line');
+    el.append(h('span', 'tx-line-k', a), h('span', 'tx-line-v', b));
+    return el;
+  }
+
+  function render(c) {
+    ui.lDraft.textContent = `Draft ~${fmtFull(c.draft)}`;
+    ui.lChat.textContent = `Chat ~${fmtFull(c.chatTotal)} / ${fmtFull(c.window)}`;
+    ui.label.className = `tx-label tx-${level(c.pct)}`;
+    ui.ring.setAttribute('stroke-dashoffset', String(RING_C * (1 - c.pct)));
+    ui.ring.setAttribute('class', `tx-ring-prog tx-${level(c.pct)}`);
+    ui.btn.title = `Kontext ~${Math.round(c.pct * 100)} % – klicken für Details`;
+    position();
+    if (ui.open) renderPanel(c);
+  }
+
+  function renderPanel(c) {
+    const p = ui.panel;
+    p.textContent = '';
+
+    const head = h('div', 'tx-head');
+    head.append(
+      h('span', 'tx-title', 'Kontextfenster'),
+      h('span', 'tx-val', `~${fmtK(c.used)} / ${fmtWin(c.window)} (${Math.round(c.pct * 100)} %)`)
+    );
+    p.append(head, bar(c.pct));
+    p.append(
+      h(
+        'div',
+        'tx-sub',
+        `Spanne ~${fmtK(c.low)}–${fmtK(c.high)} · ${c.calibrated ? 'kalibriert' : 'geschätzt'}`
+      )
+    );
+
+    p.append(h('div', 'tx-sep'));
+    p.append(h('div', 'tx-section', `Nutzungslimits des Plans · ${c.cfg.plan.label}`));
+    c.windows.forEach((u) => {
+      const row = h('div', 'tx-row');
+      const top = h('div', 'tx-head');
+      const reset = u.resetIn === null ? 'noch keine Nutzung' : `Zurücksetzung in ${fmtDuration(u.resetIn)}`;
+      top.append(h('span', 'tx-title', u.w.label), h('span', 'tx-val', `${Math.round(u.pct * 100)} %`));
+      row.append(top, bar(u.pct));
+      row.append(
+        h(
+          'div',
+          'tx-sub',
+          `${reset} · ${fmtK(u.used)} Tokens${u.calibrated ? '' : ' · unkalibriert'}`
+        )
+      );
+      p.append(row);
+    });
+
+    if (lastEvent) {
+      p.append(h('div', 'tx-notice', `Zuletzt: ${lastEvent.note}`));
+    }
+
+    const toggle = h(
+      'button',
+      'tx-link',
+      ui.showBreakdown ? 'Aufschlüsselung ausblenden' : 'Detaillierte Aufschlüsselung anzeigen'
+    );
+    toggle.type = 'button';
+    toggle.addEventListener('click', () => {
+      ui.showBreakdown = !ui.showBreakdown;
+      refresh();
+    });
+    p.append(h('div', 'tx-sep'), toggle);
+
+    if (ui.showBreakdown) {
+      const d = h('div', 'tx-detail');
+      d.append(
+        line('Chat-Text (Prosa)', `~${fmtK(c.m.prose)}`),
+        line('Code', `~${fmtK(c.m.code)}`),
+        line(`Anhänge (${c.attachCount})`, `~${fmtK(c.attach)}`),
+        line('Artefakte / Canvas', `~${fmtK(c.m.artifacts)}`),
+        line(c.calibrated ? 'Unsichtbar (kalibriert)' : 'Unsichtbar (Startwert)', `~${fmtK(c.cfg.offset)}`),
+        line(`Entwurf (inkl. ${c.pendCount} neue Anhänge)`, `~${fmtK(c.draft)}`)
+      );
+      const mine = state.tx_turns.filter((t) => t.p === P.id && t.chat === chatKey()).slice(-8);
+      if (mine.length) {
+        const last = mine[mine.length - 1];
+        d.append(line('Letzte Antwort kostete', `~${fmtK(last.cost)}`));
+        const max = Math.max(...mine.map((t) => t.cost), 1);
+        const spark = h('div', 'tx-spark');
+        mine.forEach((t) => {
+          const b = h('div', 'tx-spark-bar');
+          b.style.height = `${Math.max(6, Math.round((t.cost / max) * 100))}%`;
+          b.title = `~${fmtK(t.cost)}`;
+          spark.append(b);
+        });
+        d.append(h('div', 'tx-section', 'Verlauf pro Turn (dieser Chat)'), spark);
+      }
+      d.append(h('div', 'tx-sub', 'Ohne unsichtbare Denk-Tokens und ohne Nutzung auf anderen Geräten.'));
+
+      const actions = h('div', 'tx-actions');
+      const mk = (label, fn) => {
+        const b = h('button', 'tx-btn', label);
+        b.type = 'button';
+        b.addEventListener('click', fn);
+        return b;
+      };
+      actions.append(
+        mk('Export JSON', () => exportData('json')),
+        mk('Export CSV', () => exportData('csv')),
+        mk('Anhänge leeren', () => {
+          pending = [];
+          seen.clear();
+          delete state.tx_chats[chatKey()];
+          persist('tx_chats');
+          refresh();
+        }),
+        mk('Kalibrierung zurücksetzen', () => {
+          mutate('tx_calib', (cal) => {
+            cal = cal || {};
+            delete cal[P.id];
+            return cal;
+          });
+          lastEvent = null;
+          setTimeout(refresh, 300);
+        })
+      );
+      d.append(actions);
+      p.append(d);
+    }
+  }
+
+  function exportData(fmt) {
+    const rows = state.tx_turns.filter((t) => t.p === P.id);
+    let body;
+    let mime;
+    if (fmt === 'json') {
+      body = JSON.stringify(rows, null, 2);
+      mime = 'application/json';
+    } else {
+      body = ['ts,provider,chat,ctx,out,cost']
+        .concat(rows.map((t) => [new Date(t.ts).toISOString(), t.p, `"${t.chat}"`, t.ctx, t.out, t.cost].join(',')))
+        .join('\n');
+      mime = 'text/csv';
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([body], { type: mime }));
+    a.download = `token-extension-${P.id}.${fmt}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
+
+  // ------------------------------------------------------ Aktualisierung
+  let refreshTimer;
+  function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refresh, T.refreshDebounceMs);
+  }
+  function refresh() {
+    if (!loaded || !ui.root) return;
+    checkNavigation();
+    render(compute());
+  }
+
+  // ---------------------------------------------------------------- Start
+  async function init() {
+    const d = await store.get(['tx_settings', 'tx_calib', 'tx_turns', 'tx_chats']);
+    state.tx_settings = d.tx_settings || {};
+    state.tx_calib = d.tx_calib || {};
+    state.tx_turns = d.tx_turns || [];
+    state.tx_chats = d.tx_chats || {};
+    loaded = true;
+    buildUI();
+
+    new MutationObserver((muts) => {
+      let relevant = false;
+      for (const m of muts) {
+        const t = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+        if (t && t.closest && t.closest('.tx-ui')) continue;
+        relevant = true;
+        m.addedNodes.forEach(scanNode);
+      }
+      if (relevant) {
+        scheduleRefresh();
+        scheduleSettle();
+      }
+    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    setInterval(refresh, T.tickMs);
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area !== 'local') return;
+      if (ch.tx_settings) state.tx_settings = ch.tx_settings.newValue || {};
+      if (ch.tx_calib) state.tx_calib = ch.tx_calib.newValue || {};
+      scheduleRefresh();
+    });
+    scheduleSettle();
+    refresh();
+  }
+  init();
+})();

@@ -1,0 +1,148 @@
+/*
+ * plans.js – zentrale Konfiguration der Extension.
+ *
+ * Alles, was sich bei einem Anbieter ändern kann (Selektoren, Tarife, Limits,
+ * Fehlertexte), steht hier und nicht in content.js. Wenn die Anzeige plötzlich
+ * nichts mehr findet, ist fast immer ein Selektor in diesem File veraltet.
+ *
+ * WICHTIG: Die Selektoren sind begründete Startwerte, ich konnte sie nicht gegen
+ * die Live-Seiten prüfen. Bitte einmal in den DevTools kontrollieren
+ * (document.querySelectorAll(<selektor>).length) und bei Bedarf anpassen.
+ * Die Budgets pro Tarif sind Platzhalter, sie werden durch die Kalibrierung ersetzt.
+ */
+window.TX_CONFIG = {
+  // Ab welchem Füllstand die Anzeige gelb bzw. rot wird (Anteil von 0 bis 1).
+  thresholds: { warn: 0.7, crit: 0.9 },
+
+  // Zeitwerte in Millisekunden.
+  timing: {
+    settleMs: 2200, // So lange muss die Seite ruhig sein, bis eine Antwort als fertig gilt.
+    refreshDebounceMs: 300, // Wartezeit, bevor die Anzeige nach einer Änderung neu rechnet.
+    tickMs: 15000, // Intervall für die Aktualisierung der Reset-Zeiten.
+    noticeCooldownMs: 600000 // Pro Fehlermeldungsart wird höchstens alle 10 Minuten kalibriert.
+  },
+
+  // Parameter der Token-Schätzung für Text, Bilder und PDFs.
+  estimator: {
+    englishCharsPerToken: 4.0, // Englischer Fließtext: ca. 4 Zeichen pro Token.
+    germanCharsPerToken: 3.2, // Deutscher Fließtext tokenisiert schlechter.
+    codeCharsPerToken: 3.0, // Code und Tabellen sind noch teurer.
+    messageOverhead: 4, // Rahmen-Tokens pro Nachricht (Rolle, Trenner).
+    rangeUncalibrated: 0.15, // Anzeige-Spanne ±15 %, solange nichts kalibriert ist.
+    rangeCalibrated: 0.08, // Anzeige-Spanne ±8 % nach Kalibrierung.
+    pdfTokensPerPage: 1800, // Grobwert pro PDF-Seite (Text plus Seitenbild).
+    // Bild-Tokens je Anbieter aus Breite und Höhe. Formeln sind Näherungen.
+    imageTokens(providerId, w, h) {
+      if (providerId === 'claude') return Math.min(1600, Math.ceil((w * h) / 750));
+      if (providerId === 'chatgpt') {
+        const k = Math.min(1, 2048 / Math.max(w, h));
+        let sw = w * k;
+        let sh = h * k;
+        const s = Math.min(1, 768 / Math.min(sw, sh));
+        sw *= s;
+        sh *= s;
+        return 85 + 170 * Math.ceil(sw / 512) * Math.ceil(sh / 512);
+      }
+      return w <= 384 && h <= 384 ? 258 : 258 * Math.ceil(w / 768) * Math.ceil(h / 768);
+    }
+  },
+
+  // Verbrauchsmodell: Kosten einer Antwort = Kontext davor + Gewicht * Ausgabe.
+  usage: {
+    outputWeight: 1, // Gewicht der Ausgabe-Tokens gegenüber Eingabe-Tokens.
+    historyLimit: 3000, // So viele Turns werden maximal gespeichert.
+    calibSamples: 7 // So viele Kalibrierwerte pro Größe bleiben im Median.
+  },
+
+  providers: [
+    {
+      id: 'claude',
+      name: 'Claude',
+      hosts: ['claude.ai'],
+      newChatPath: /^\/(new)?\/?$/, // Pfad einer leeren Startseite.
+      selectors: {
+        input: 'div[contenteditable="true"].ProseMirror, fieldset div[contenteditable="true"], div[contenteditable="true"][role="textbox"]',
+        composer: 'fieldset, form',
+        user: '[data-testid="user-message"]',
+        assistant: '.font-claude-response, .font-claude-message, [data-testid="assistant-message"]',
+        artifact: '[data-testid="artifact-content"], .artifact-content',
+        streaming: '[data-is-streaming="true"]'
+      },
+      defaultContextWindow: 200000,
+      defaultOffset: 3500, // Startwert für unsichtbare Tokens (System-Prompt, Tools, Memory).
+      defaultPlan: 'pro',
+      // budget = Startwert in Kosten-Einheiten pro Fenster (Platzhalter bis zur Kalibrierung).
+      plans: [
+        { id: 'free', label: 'Free', budget: { session: 300000, week: 1500000 } },
+        { id: 'pro', label: 'Pro', budget: { session: 1500000, week: 9000000 } },
+        { id: 'max5', label: 'Max (5x)', budget: { session: 7500000, week: 45000000 } },
+        { id: 'max20', label: 'Max (20x)', budget: { session: 30000000, week: 180000000 } }
+      ],
+      windows: [
+        { id: 'session', label: '5-Stunden-Limit', ms: 5 * 3600 * 1000 },
+        { id: 'week', label: 'Wöchentlich', ms: 7 * 24 * 3600 * 1000, weekly: true }
+      ],
+      patterns: {
+        usage: /(reached|hit|exceeded)[^.\n]{0,40}\blimit|\blimit\b[^.\n]{0,30}\b(reached|exceeded)|limit[^.\n]{0,20}erreicht|erreicht[^.\n]{0,40}limit/i,
+        context: /(chat|conversation) (is|has become|was) too long|maximum length for this (chat|conversation)|(chat|unterhaltung|konversation) ist zu lang/i
+      }
+    },
+    {
+      id: 'chatgpt',
+      name: 'ChatGPT',
+      hosts: ['chatgpt.com', 'chat.openai.com'],
+      newChatPath: /^\/(\?.*)?$/,
+      selectors: {
+        input: '#prompt-textarea, div[contenteditable="true"].ProseMirror',
+        composer: 'form[data-type="unified-composer"]',
+        user: '[data-message-author-role="user"]',
+        assistant: '[data-message-author-role="assistant"]',
+        artifact: '#codemirror, [data-testid="canvas"]',
+        streaming: 'button[data-testid="stop-button"], button[aria-label*="Stop"]'
+      },
+      defaultContextWindow: 128000,
+      defaultOffset: 2500,
+      defaultPlan: 'plus',
+      plans: [
+        { id: 'free', label: 'Free', contextWindow: 16000, budget: { burst: 150000, day: 600000 } },
+        { id: 'plus', label: 'Plus', contextWindow: 128000, budget: { burst: 2000000, day: 8000000 } },
+        { id: 'pro', label: 'Pro', contextWindow: 128000, budget: { burst: 20000000, day: 80000000 } }
+      ],
+      windows: [
+        { id: 'burst', label: '3-Stunden-Fenster', ms: 3 * 3600 * 1000 },
+        { id: 'day', label: '24-Stunden-Fenster', ms: 24 * 3600 * 1000, weekly: true }
+      ],
+      patterns: {
+        usage: /(reached|hit|exceeded)[^.\n]{0,40}\blimit|\blimit\b[^.\n]{0,30}\b(reached|exceeded)|limit[^.\n]{0,20}erreicht|erreicht[^.\n]{0,40}limit/i,
+        context: /message (you submitted )?(was|is) too long|conversation is too long|(nachricht|unterhaltung) ist zu lang/i
+      }
+    },
+    {
+      id: 'gemini',
+      name: 'Gemini',
+      hosts: ['gemini.google.com'],
+      newChatPath: /^\/app\/?$/,
+      selectors: {
+        input: 'rich-textarea .ql-editor, div.ql-editor[contenteditable="true"]',
+        composer: 'input-area-v2, .input-area-container, form',
+        user: 'user-query',
+        assistant: 'model-response',
+        artifact: 'code-immersive-panel, immersive-editor',
+        streaming: 'button[aria-label*="Stop"], .stop-icon'
+      },
+      defaultContextWindow: 1000000,
+      defaultOffset: 1500,
+      defaultPlan: 'free',
+      plans: [
+        { id: 'free', label: 'Free', budget: { day: 2000000 } },
+        { id: 'pro', label: 'AI Pro', budget: { day: 10000000 } },
+        { id: 'ultra', label: 'AI Ultra', budget: { day: 40000000 } }
+      ],
+      windows: [{ id: 'day', label: 'Tageslimit', ms: 24 * 3600 * 1000 }],
+      patterns: {
+        usage: /(reached|hit|exceeded)[^.\n]{0,40}\blimit|\blimit\b[^.\n]{0,30}\b(reached|exceeded)|limit[^.\n]{0,20}erreicht|erreicht[^.\n]{0,40}limit/i,
+        context: /(prompt|input|conversation) is too long|exceeds? the (context|token)|(eingabe|unterhaltung) ist zu lang/i
+      }
+    }
+  ]
+};
