@@ -6,16 +6,31 @@
 
 /* Container für Label + Ring, sitzt rechtsbündig über der Textbox */
 .tx-root {
+  --tx-surface: #262624;
+  --tx-foreground: #e8e6e0;
   position: fixed; /* bleibt an Ort und Stelle, egal wie die Seite scrollt */
   z-index: 2147483000; /* liegt über allen Elementen der Chat-Seite */
+  box-sizing: border-box;
   display: flex; /* ordnet Label und Ring nebeneinander an */
   align-items: center; /* zentriert beide vertikal zueinander */
+  justify-content: flex-end;
   gap: 8px; /* Abstand zwischen Label und Ring */
-  transform: translateX(-100%); /* schiebt den Container nach links, damit die rechte Kante am Anker liegt */
+  padding: 3px 6px; /* gibt Hintergrundfläche um Anzeige und Ring */
+  background: var(--tx-surface); /* passt sich der Oberfläche der KI-Eingabe an */
+  color: var(--tx-foreground); /* kontrastierender Text auf heller und dunkler Fläche */
+  border-radius: 8px; /* weiche Ecken passend zur Eingabefläche */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16); /* hebt die Fläche dezent vom Seiteninhalt ab */
+  transform: none;
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; /* neutrale Systemschrift */
   font-size: 12px; /* kleine, unaufdringliche Schrift */
+  font-weight: 600;
   line-height: 1; /* verhindert zusätzliche Zeilenhöhe */
   user-select: none; /* Zahlen sollen beim Klicken nicht markiert werden */
+}
+
+.tx-root.tx-transparent {
+  background: transparent;
+  box-shadow: none;
 }
 
 /* hidden-Attribut muss stärker sein als display:flex von oben */
@@ -28,9 +43,25 @@
 .tx-label {
   display: flex; /* Draft und Chat in einer Zeile */
   gap: 12px; /* Abstand zwischen Draft- und Chat-Teil */
-  color: #8b8a85; /* gedämpftes Grau wie im Vorbild */
+  color: #ffffff;
+  font-weight: 700;
   white-space: nowrap; /* kein Zeilenumbruch im Label */
   font-variant-numeric: tabular-nums; /* gleich breite Ziffern, damit nichts springt */
+}
+
+.tx-l-draft,
+.tx-l-chat {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.tx-label .tx-label-name {
+  color: #9a9a9a;
+  font-weight: 600;
+}
+
+.tx-label .tx-label-value {
+  color: #ffffff;
 }
 
 /* Label wird gelb, wenn der Kontext fast voll ist */
@@ -41,6 +72,11 @@
 /* Label wird rot, wenn der Kontext kritisch voll ist */
 .tx-label.tx-crit {
   color: #e5584f; /* deutliches Rot für kritischen Füllstand */
+}
+
+.tx-label.tx-warn .tx-label-value,
+.tx-label.tx-crit .tx-label-value {
+  color: #ffffff;
 }
 
 /* Klickbarer Knopf, der den Ring enthält */
@@ -60,7 +96,7 @@
 
 /* leichte Hervorhebung beim Überfahren */
 .tx-ring-btn:hover {
-  background: rgba(128, 128, 128, 0.18); /* dezenter grauer Kreis hinter dem Ring */
+  background: color-mix(in srgb, var(--tx-foreground) 14%, var(--tx-surface)); /* dezente Hervorhebung */
 }
 
 /* SVG-Grafik des Rings */
@@ -105,13 +141,14 @@
   max-height: calc(100vh - 120px); /* Panel bleibt innerhalb des Fensters */
   overflow-y: auto; /* scrollt, wenn die Aufschlüsselung lang wird */
   padding: 14px 16px; /* Innenabstand der Karte */
-  background: #262624; /* dunkle Kartenfläche */
-  color: #e8e6e0; /* heller Standardtext */
-  border: 1px solid #3d3d3a; /* feine Umrandung */
+  background: var(--tx-surface); /* an die Oberfläche der KI-Eingabe angepasst */
+  color: var(--tx-foreground); /* passt den Kontrast an helle und dunkle Oberflächen an */
+  border: 1px solid color-mix(in srgb, var(--tx-foreground) 18%, var(--tx-surface)); /* feine Umrandung */
   border-radius: 12px; /* abgerundete Ecken */
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); /* weicher Schatten für Tiefe */
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; /* gleiche Schrift wie das Label */
   font-size: 12px; /* kompakte Schriftgröße */
+  font-weight: 400;
   line-height: 1.35; /* gut lesbarer Zeilenabstand */
 }
 
@@ -126,13 +163,13 @@
 
 /* Titel einer Zeile, z. B. "Kontextfenster" */
 .tx-title {
-  color: #e8e6e0; /* heller Titeltext */
+  color: var(--tx-foreground);
   font-weight: 600; /* leicht fett */
 }
 
 /* Wert rechts, z. B. "~265,5k / 1M (27 %)" */
 .tx-val {
-  color: #b9b6ad; /* etwas gedämpfter als der Titel */
+  color: color-mix(in srgb, var(--tx-foreground) 72%, var(--tx-surface));
   font-variant-numeric: tabular-nums; /* gleich breite Ziffern */
   white-space: nowrap; /* Wert bleibt in einer Zeile */
 }
@@ -140,7 +177,7 @@
 /* Balken-Hintergrund */
 .tx-bar {
   height: 6px; /* Dicke des Balkens */
-  background: #3a3a37; /* dunkle Spur */
+  background: color-mix(in srgb, var(--tx-foreground) 14%, var(--tx-surface)); /* abgesetzte Spur */
   border-radius: 999px; /* vollständig abgerundet */
   overflow: hidden; /* Füllung bleibt innerhalb der Rundung */
 }
@@ -166,7 +203,7 @@
 /* Kleine Nebenzeile unter Balken, z. B. Reset-Zeit */
 .tx-sub {
   margin-top: 6px; /* Abstand zum Balken darüber */
-  color: #8f8c84; /* gedämpftes Grau */
+  color: color-mix(in srgb, var(--tx-foreground) 58%, var(--tx-surface));
   font-size: 11px; /* kleiner als der Haupttext */
 }
 
@@ -174,13 +211,13 @@
 .tx-sep {
   height: 1px; /* hauchdünne Linie */
   margin: 12px 0; /* Abstand nach oben und unten */
-  background: #3d3d3a; /* gleiche Farbe wie der Kartenrand */
+  background: color-mix(in srgb, var(--tx-foreground) 18%, var(--tx-surface)); /* gleiche Farbe wie der Kartenrand */
 }
 
 /* Abschnittsüberschrift, z. B. "Nutzungslimits des Plans" */
 .tx-section {
   margin: 8px 0 8px; /* Abstand um die Überschrift */
-  color: #9a978f; /* gedämpftes Grau */
+  color: color-mix(in srgb, var(--tx-foreground) 62%, var(--tx-surface));
   font-size: 11px; /* klein */
 }
 
@@ -206,7 +243,7 @@
   padding: 2px 0; /* kleiner vertikaler Klickbereich */
   border: none; /* keine Umrandung */
   background: transparent; /* kein Hintergrund */
-  color: #b9b6ad; /* gedämpfter Linktext */
+  color: color-mix(in srgb, var(--tx-foreground) 72%, var(--tx-surface));
   font: inherit; /* übernimmt Schrift der Karte */
   text-align: left; /* linksbündig wie im Vorbild */
   text-decoration: underline; /* Unterstreichung als Link-Hinweis */
@@ -216,7 +253,7 @@
 
 /* Link beim Überfahren */
 .tx-link:hover {
-  color: #ffffff; /* wird heller beim Überfahren */
+  color: var(--tx-foreground); /* wird beim Überfahren hervorgehoben */
 }
 
 /* Bereich der aufgeklappten Aufschlüsselung */
@@ -234,12 +271,12 @@
 
 /* Name in der Aufschlüsselung */
 .tx-line-k {
-  color: #9a978f; /* gedämpft */
+  color: color-mix(in srgb, var(--tx-foreground) 62%, var(--tx-surface));
 }
 
 /* Wert in der Aufschlüsselung */
 .tx-line-v {
-  color: #e8e6e0; /* hell */
+  color: var(--tx-foreground); /* kontrastierender Wert */
   font-variant-numeric: tabular-nums; /* gleich breite Ziffern */
 }
 
@@ -271,10 +308,10 @@
 /* Aktionsknopf (Export, Zurücksetzen) */
 .tx-btn {
   padding: 5px 9px; /* Innenabstand des Knopfs */
-  border: 1px solid #4a4a46; /* feine Umrandung */
+  border: 1px solid color-mix(in srgb, var(--tx-foreground) 22%, var(--tx-surface)); /* feine Umrandung */
   border-radius: 6px; /* leicht abgerundet */
-  background: #30302d; /* etwas heller als die Karte */
-  color: #e8e6e0; /* heller Text */
+  background: color-mix(in srgb, var(--tx-foreground) 9%, var(--tx-surface)); /* leicht abgesetzte Schaltfläche */
+  color: var(--tx-foreground); /* kontrastierender Text */
   font: inherit; /* übernimmt Schrift der Karte */
   font-size: 11px; /* kleine Schrift */
   cursor: pointer; /* zeigt die Klickbarkeit an */
@@ -282,5 +319,5 @@
 
 /* Aktionsknopf beim Überfahren */
 .tx-btn:hover {
-  background: #3a3a36; /* wird beim Überfahren heller */
+  background: color-mix(in srgb, var(--tx-foreground) 16%, var(--tx-surface)); /* wird beim Überfahren hervorgehoben */
 }

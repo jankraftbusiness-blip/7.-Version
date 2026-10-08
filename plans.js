@@ -93,7 +93,7 @@ window.TX_CONFIG = {
       hosts: ['chatgpt.com', 'chat.openai.com'],
       newChatPath: /^\/(\?.*)?$/,
       selectors: {
-        input: '#prompt-textarea, div[contenteditable="true"].ProseMirror',
+        input: '#prompt-textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"].ProseMirror',
         composer: 'form[data-type="unified-composer"]',
         user: '[data-message-author-role="user"]',
         assistant: '[data-message-author-role="assistant"]',

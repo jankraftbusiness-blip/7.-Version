@@ -37,6 +37,60 @@
       return null;
     }
   };
+  function findInput() {
+    if (P.id !== 'chatgpt') return qs(S.input);
+    const candidates = qsa(`${S.input}, textarea, [contenteditable="true"]`);
+    return candidates
+      .filter((el) => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return (
+          el.isConnected &&
+          el.getClientRects().length > 0 &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden'
+        );
+      })
+      .sort((a, b) => {
+        const rank = (el) => {
+          if (el.id === 'prompt-textarea') return 0;
+          if (el.closest(S.composer)) return 1;
+          if (el.closest('form')) return 2;
+          if (el.getAttribute('role') === 'textbox') return 3;
+          return 4;
+        };
+        return rank(a) - rank(b);
+      })[0] || null;
+  }
+  function syncSurface(anchor, includeAncestors = true) {
+    [ui.root, ui.panel].forEach((node) => {
+      node.style.setProperty('--tx-surface', '#262624');
+      node.style.setProperty('--tx-foreground', '#e8e6e0');
+    });
+    let el = anchor;
+    while (el && el !== document.documentElement) {
+      const bg = getComputedStyle(el).backgroundColor;
+      const match = bg.match(/rgba?\(([^)]+)\)/);
+      if (match) {
+        const parts = match[1].split(/[,/ ]+/).filter(Boolean);
+        const alpha = parts.length > 3 ? Number(parts[3]) : 1;
+        if (alpha >= 0.95) {
+          const [r, g, b] = parts.slice(0, 3).map(Number);
+          const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+          const fg = luminance < 0.5 ? '#e8e6e0' : '#202020';
+          [ui.root, ui.panel].forEach((node) => {
+            node.style.setProperty('--tx-surface', bg);
+            node.style.setProperty('--tx-foreground', fg);
+          });
+          return;
+        }
+      }
+      if (!includeAncestors) break;
+      el = el.parentElement;
+    }
+  }
   const txt = (el) => (el ? (el.innerText !== undefined ? el.innerText : el.textContent) || '' : '');
   const outermost = (els) => els.filter((e) => !els.some((o) => o !== e && o.contains(e)));
   const median = (a) => {
@@ -159,7 +213,7 @@
   }
 
   function draftTokens() {
-    const inp = qs(S.input);
+    const inp = findInput();
     if (!inp) return 0;
     const text = inp.tagName === 'TEXTAREA' || inp.tagName === 'INPUT' ? inp.value : txt(inp);
     return estimateTokens((text || '').trim(), false);
@@ -422,7 +476,11 @@
     root.hidden = true;
     const label = h('div', 'tx-label');
     const lDraft = h('span', 'tx-l-draft');
+    const lDraftValue = h('span', 'tx-label-value');
+    lDraft.append(h('span', 'tx-label-name', 'Draft'), lDraftValue);
     const lChat = h('span', 'tx-l-chat');
+    const lChatValue = h('span', 'tx-label-value');
+    lChat.append(h('span', 'tx-label-name', 'Chat'), lChatValue);
     label.append(lDraft, lChat);
     const btn = h('button', 'tx-ring-btn');
     btn.type = 'button';
@@ -454,7 +512,7 @@
     panel.addEventListener('click', (e) => e.stopPropagation());
 
     document.documentElement.append(root, panel);
-    Object.assign(ui, { root, panel, label, lDraft, lChat, ring: prog, btn });
+    Object.assign(ui, { root, panel, label, lDraftValue, lChatValue, ring: prog, btn });
     document.addEventListener('click', () => ui.open && togglePanel(false));
     document.addEventListener('keydown', (e) => e.key === 'Escape' && ui.open && togglePanel(false));
   }
@@ -466,40 +524,80 @@
   }
 
   let posQueued = false;
+  let chatgptLayoutTimer;
+  let chatgptLayoutSnapshot = '';
+  let chatgptLayoutStableSince = 0;
+  let chatgptLayoutReady = false;
   function position() {
     if (posQueued) return;
     posQueued = true;
     requestAnimationFrame(() => {
       posQueued = false;
-      const inp = qs(S.input);
-      ui.root.hidden = !inp;
+      const inp = findInput();
       if (!inp) {
+        ui.root.hidden = true;
         ui.panel.hidden = true;
         return;
       }
+      ui.root.classList.toggle(
+        'tx-transparent',
+        P.id === 'gemini' && P.newChatPath.test(location.pathname)
+      );
       ui.panel.hidden = !ui.open;
       const comp =
         P.id === 'chatgpt'
           ? inp.closest(S.composer) || inp.closest('form') || inp
-          : (S.composer && qs(S.composer)) || inp.closest('form') || inp;
-      const r = comp.getBoundingClientRect();
+          : P.id === 'claude'
+            ? inp.closest('fieldset') || inp.closest('form') || inp
+            : (S.composer && qs(S.composer)) || inp.closest('form') || inp;
+      syncSurface(P.id === 'claude' ? document.body : comp);
+      let rect = comp.getBoundingClientRect();
+      if (P.id === 'chatgpt' && !rect.width) rect = inp.getBoundingClientRect();
+      if (P.id === 'chatgpt') {
+        const snapshot = [
+          comp,
+          Math.round(rect.left),
+          Math.round(rect.top),
+          Math.round(rect.width),
+          Math.round(rect.height)
+        ].join('|');
+        if (snapshot !== chatgptLayoutSnapshot) {
+          chatgptLayoutSnapshot = snapshot;
+          chatgptLayoutStableSince = Date.now();
+          chatgptLayoutReady = false;
+          clearTimeout(chatgptLayoutTimer);
+          chatgptLayoutTimer = null;
+        }
+        if (!chatgptLayoutReady) {
+          if (Date.now() - chatgptLayoutStableSince >= 600) {
+            chatgptLayoutReady = true;
+            clearTimeout(chatgptLayoutTimer);
+          } else if (!chatgptLayoutTimer) {
+            chatgptLayoutTimer = setTimeout(() => {
+              chatgptLayoutTimer = null;
+              position();
+            }, 100);
+          }
+        }
+        ui.root.hidden = !chatgptLayoutReady;
+        if (!chatgptLayoutReady) ui.panel.hidden = true;
+      } else {
+        ui.root.hidden = false;
+      }
       let left;
       let top;
-      if (!r.width) {
-        if (P.id === 'chatgpt') {
-          ui.root.hidden = true;
-          ui.panel.hidden = true;
-          return;
-        }
+      if (!rect.width) {
         left = window.innerWidth - 16;
         top = window.innerHeight - 90;
+        ui.root.style.width = '';
       } else {
-        left = r.right - 4;
-        top = r.top - 30;
+        left = rect.left;
+        top = rect.top - 30;
+        ui.root.style.width = `${rect.width}px`;
       }
       ui.root.style.left = `${left}px`;
       ui.root.style.top = `${Math.max(4, top)}px`;
-      ui.panel.style.left = `${left}px`;
+      ui.panel.style.left = `${rect.width ? rect.right - 4 : left}px`;
       ui.panel.style.bottom = `${Math.max(8, window.innerHeight - top + 8)}px`;
     });
   }
@@ -518,8 +616,8 @@
   }
 
   function render(c) {
-    ui.lDraft.textContent = `Draft ~${fmtFull(c.draft)}`;
-    ui.lChat.textContent = `Chat ~${fmtFull(c.chatTotal)} / ${fmtFull(c.window)}`;
+    ui.lDraftValue.textContent = `~${fmtFull(c.draft)}`;
+    ui.lChatValue.textContent = `~${fmtFull(c.chatTotal)} / ${fmtFull(c.window)}`;
     ui.label.className = `tx-label tx-${level(c.pct)}`;
     ui.ring.setAttribute('stroke-dashoffset', String(RING_C * (1 - c.pct)));
     ui.ring.setAttribute('class', `tx-ring-prog tx-${level(c.pct)}`);
@@ -692,10 +790,15 @@
         scheduleRefresh();
         scheduleSettle();
       }
-    }).observe(document.body, { childList: true, subtree: true, characterData: true });
+    }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 
     window.addEventListener('resize', position);
     window.addEventListener('scroll', position, true);
+    window.addEventListener('pageshow', scheduleRefresh);
+    window.addEventListener('focus', scheduleRefresh);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) scheduleRefresh();
+    });
     setInterval(refresh, T.tickMs);
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== 'local') return;
