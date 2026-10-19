@@ -95,10 +95,11 @@ window.TX_CONFIG = {
       selectors: {
         input: '#prompt-textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"].ProseMirror',
         composer: 'form[data-type="unified-composer"]',
-        user: '[data-message-author-role="user"]',
-        assistant: '[data-message-author-role="assistant"]',
+        // Die Rolle steht am Ende des data-content-search-unit-key; Turn-Status und Stop-Button erkennen Streaming.
+        user: '[data-content-search-unit-key$=":user"]',
+        assistant: '[data-content-search-unit-key$=":assistant"]',
         artifact: '#codemirror, [data-testid="canvas"]',
-        streaming: 'button[data-testid="stop-button"], button[aria-label*="Stop"]'
+        streaming: '[data-talvt-turn-state="in_progress"], button[data-testid="stop-button"], button[aria-label*="Stop"]'
       },
       defaultContextWindow: 128000,
       defaultOffset: 2500,

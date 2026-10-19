@@ -172,8 +172,17 @@
     for (const ch of text) if (ch.charCodeAt(0) > 0x2fff) wide++;
     return Math.ceil((text.length - wide) / cpt + wide * 1.2);
   }
+  function hash(text) {
+    let value = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      value ^= text.charCodeAt(i);
+      value = Math.imul(value, 0x01000193);
+    }
+    return (value >>> 0).toString(36);
+  }
 
   const msgCache = new WeakMap();
+  const msgIdentity = new WeakMap();
   function measureMessage(el) {
     const len = el.textContent.length;
     const c = msgCache.get(el);
@@ -193,23 +202,104 @@
   function measureChat() {
     const users = outermost(qsa(S.user));
     const asst = outermost(qsa(S.assistant));
-    let prose = 0;
-    let code = 0;
+    const userSet = new Set(users);
+    const messages = users.concat(asst).sort((a, b) => {
+      if (a === b) return 0;
+      return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+    const chat = getChat(chatKey());
+    const occurrences = new Map();
+    const measured = messages.map((el) => {
+      const role = userSet.has(el) ? 'u' : 'a';
+      const text = el.textContent || '';
+      const previous = msgIdentity.get(el);
+      const identity = previous && previous.role === role &&
+        (text === previous.text || (previous.text && text.startsWith(previous.text)))
+        ? previous.base
+        : `${role}:${hash(text.slice(0, 80))}`;
+      msgIdentity.set(el, { role, text, base: identity });
+      const order = occurrences.get(identity) || 0;
+      occurrences.set(identity, order + 1);
+      return { el, role, text, identity, order, count: 0 };
+    });
+    measured.forEach((message) => {
+      message.count = occurrences.get(message.identity);
+    });
+    const newMessages = chatChanges(chatKey());
+    let changed = false;
+    Array.from(occurrences.keys()).forEach((identity) => {
+      if (occurrences.get(identity) < 2) return;
+      const firstDuplicate = `${identity}#1`;
+      if (chat.msgs[identity]) {
+        const existing = chat.msgs[identity];
+        const duplicate = chat.msgs[firstDuplicate];
+        chat.msgs[firstDuplicate] = duplicate
+          ? {
+              role: existing.role,
+              prose: Math.max(existing.prose || 0, duplicate.prose || 0),
+              code: Math.max(existing.code || 0, duplicate.code || 0)
+            }
+          : existing;
+        delete chat.msgs[identity];
+        if (newMessages.delete(identity)) newMessages.add(firstDuplicate);
+        changed = true;
+      }
+    });
     let lastAsst = 0;
-    users.forEach((el) => {
-      const m = measureMessage(el);
-      prose += m.prose;
-      code += m.code;
+    measured.forEach((message) => {
+      const duplicateKey = `${message.identity}#${message.order + 1}`;
+      let key = message.identity;
+      if (message.count > 1) key = duplicateKey;
+      else if (!chat.msgs[key] && chat.msgs[`${message.identity}#1`]) key = `${message.identity}#1`;
+      const m = measureMessage(message.el);
+      let saved = chat.msgs[key];
+      if (!saved) {
+        saved = chat.msgs[key] = { role: message.role, prose: m.prose, code: m.code };
+        newMessages.add(key);
+        changed = true;
+      } else {
+        const prose = Math.max(saved.prose || 0, m.prose);
+        const code = Math.max(saved.code || 0, m.code);
+        if (prose !== saved.prose || code !== saved.code) changed = true;
+        saved.role = message.role;
+        saved.prose = prose;
+        saved.code = code;
+      }
+      if (message.role === 'a') lastAsst = saved.prose + saved.code;
+      message.key = key;
     });
-    asst.forEach((el, i) => {
-      const m = measureMessage(el);
-      prose += m.prose;
-      code += m.code;
-      if (i === asst.length - 1) lastAsst = m.prose + m.code;
-    });
+    if (changed) scheduleChatPersist();
+    touchChat(chatKey(), chat);
     let artifacts = 0;
     if (S.artifact) outermost(qsa(S.artifact)).forEach((el) => (artifacts += estimateTokens(txt(el), true)));
-    return { prose, code, artifacts, users: users.length, asst: asst.length, lastAsst };
+    const prose = Object.values(chat.msgs).reduce((sum, message) => sum + message.prose, 0);
+    const code = Object.values(chat.msgs).reduce((sum, message) => sum + message.code, 0);
+    const lastVisible = measured[measured.length - 1] || null;
+    return {
+      prose,
+      code,
+      artifacts,
+      users: users.length,
+      asst: asst.length,
+      lastAsst,
+      lastVisible: lastVisible && { role: lastVisible.role, key: lastVisible.key, el: lastVisible.el }
+    };
+  }
+
+  function isAtChatEnd(el) {
+    let parent = el && el.parentElement;
+    while (parent && parent !== document.documentElement) {
+      const overflow = getComputedStyle(parent).overflowY;
+      if (
+        parent.scrollHeight > parent.clientHeight + 20 &&
+        /(auto|scroll|overlay)/.test(overflow)
+      ) {
+        return parent.scrollHeight - parent.clientHeight - parent.scrollTop <= 120;
+      }
+      parent = parent.parentElement;
+    }
+    const scroll = document.scrollingElement || document.documentElement;
+    return scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 120;
   }
 
   function draftTokens() {
@@ -290,10 +380,81 @@
   let lastKey = chatKey();
   let lastPath = location.pathname;
   let migrateFrom = null;
+  const pendingChatChanges = new Map();
+  let chatPersistTimer;
+
+  function chatChanges(key) {
+    if (!pendingChatChanges.has(key)) pendingChatChanges.set(key, new Set());
+    return pendingChatChanges.get(key);
+  }
+
+  function scheduleChatPersist() {
+    clearTimeout(chatPersistTimer);
+    chatPersistTimer = setTimeout(() => persist('tx_chats'), 300);
+  }
+
+  function getChat(key) {
+    let chat = state.tx_chats[key];
+    if (!chat) {
+      chat = state.tx_chats[key] = { attach: [], msgs: {}, lastSeen: Date.now() };
+      scheduleChatPersist();
+      pruneChats(migrateFrom);
+    }
+    if (!Array.isArray(chat.attach)) chat.attach = [];
+    if (!chat.msgs || typeof chat.msgs !== 'object') chat.msgs = {};
+    return chat;
+  }
+
+  function touchChat(key, chat) {
+    const now = Date.now();
+    if (!chat.lastSeen || now - chat.lastSeen >= 60000) {
+      chat.lastSeen = now;
+      scheduleChatPersist();
+    }
+    pruneChats(migrateFrom);
+  }
+
+  function pruneChats(protectedKey) {
+    const ordered = Object.entries(state.tx_chats)
+      .sort((a, b) => ((b[1] && b[1].lastSeen) || 0) - ((a[1] && a[1].lastSeen) || 0))
+      .slice(0, 50);
+    if (protectedKey && state.tx_chats[protectedKey] && !ordered.some(([chatId]) => chatId === protectedKey)) {
+      ordered[ordered.length - 1] = [protectedKey, state.tx_chats[protectedKey]];
+    }
+    const keep = ordered;
+    const retained = new Set(keep.map(([chatId]) => chatId));
+    let removed = false;
+    Object.keys(state.tx_chats).forEach((chatId) => {
+      if (!retained.has(chatId)) {
+        delete state.tx_chats[chatId];
+        removed = true;
+      }
+    });
+    if (removed) scheduleChatPersist();
+  }
+
+  function mergeChats(oldChat, currentChat) {
+    const merged = { ...oldChat, ...currentChat };
+    merged.attach = [...(oldChat.attach || []), ...(currentChat.attach || [])];
+    merged.msgs = { ...(oldChat.msgs || {}) };
+    Object.entries(currentChat.msgs || {}).forEach(([key, message]) => {
+      const old = merged.msgs[key];
+      merged.msgs[key] = old
+        ? {
+            role: message.role,
+            prose: Math.max(old.prose || 0, message.prose || 0),
+            code: Math.max(old.code || 0, message.code || 0)
+          }
+        : message;
+    });
+    merged.lastSeen = Math.max(oldChat.lastSeen || 0, currentChat.lastSeen || 0, Date.now());
+    return merged;
+  }
 
   function checkNavigation() {
     const key = chatKey();
     if (key === lastKey) return;
+    if (pendingChatChanges.has(lastKey)) pendingChatChanges.get(lastKey).clear();
     if (P.newChatPath.test(lastPath)) {
       migrateFrom = lastKey; // Erste Nachricht in neuem Chat: Pfad wechselt auf /chat/<id>.
     } else {
@@ -310,7 +471,7 @@
   function compute() {
     const c = cfgNow();
     const m = measureChat();
-    const chat = state.tx_chats[chatKey()] || { attach: [] };
+    const chat = getChat(chatKey());
     const attach = chat.attach.reduce((a, f) => a + f.tokens, 0);
     const pend = pending.reduce((a, f) => a + f.tokens, 0);
     const draftText = draftTokens();
@@ -372,35 +533,35 @@
     if (S.streaming && qs(S.streaming)) return scheduleSettle(); // Antwort läuft noch.
     const key = chatKey();
     const m = measureChat();
-    let b = baseline.get(key);
-    if (!b) {
+    const changes = chatChanges(key);
+    let chat = getChat(key);
+    if (!baseline.has(key)) {
       // Erster Blick auf diesen Chat: Bestand ist kein Verbrauch.
       const fresh = migrateFrom && m.users <= 1 && m.asst <= 1;
       if (fresh) {
         const old = state.tx_chats[migrateFrom];
         if (old) {
-          state.tx_chats[key] = old;
+          chat = state.tx_chats[key] = mergeChats(old, chat);
           delete state.tx_chats[migrateFrom];
-          persist('tx_chats');
+          scheduleChatPersist();
         }
-        b = { users: 0, asst: 0 };
-      } else {
-        b = { users: m.users, asst: m.asst };
-      }
-      baseline.set(key, b);
+      } else changes.clear();
+      baseline.set(key, true);
       migrateFrom = null;
     }
-    if (m.users > b.users) {
-      if (pending.length) {
-        const ch = (state.tx_chats[key] = state.tx_chats[key] || { attach: [] });
-        ch.attach.push(...pending);
-        persist('tx_chats');
-        pending = [];
-        seen.clear();
-      }
-      b.users = m.users;
+    const hasNewUser = Array.from(changes).some((msgKey) => chat.msgs[msgKey] && chat.msgs[msgKey].role === 'u');
+    if (hasNewUser && pending.length) {
+      chat.attach.push(...pending);
+      scheduleChatPersist();
+      pending = [];
+      seen.clear();
     }
-    if (m.asst > b.asst) {
+    if (
+      m.lastVisible &&
+      m.lastVisible.role === 'a' &&
+      changes.has(m.lastVisible.key) &&
+      isAtChatEnd(m.lastVisible.el)
+    ) {
       const c = compute();
       const out = c.m.lastAsst;
       const ctxBefore = Math.max(0, c.chatTotal - out);
@@ -411,8 +572,8 @@
         const a = (arr || []).concat([turn]);
         return a.slice(-CFG.usage.historyLimit);
       });
-      b.asst = m.asst;
     }
+    changes.clear();
     scheduleRefresh();
   }
 
@@ -717,8 +878,8 @@
         mk('Anhänge leeren', () => {
           pending = [];
           seen.clear();
-          delete state.tx_chats[chatKey()];
-          persist('tx_chats');
+          getChat(chatKey()).attach = [];
+          scheduleChatPersist();
           refresh();
         }),
         mk('Kalibrierung zurücksetzen', () => {
