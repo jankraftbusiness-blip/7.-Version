@@ -288,17 +288,23 @@
 
   function isAtChatEnd(el) {
     let parent = el && el.parentElement;
+    let scrollable = null;
+    let chatScroller = null;
     while (parent && parent !== document.documentElement) {
       const overflow = getComputedStyle(parent).overflowY;
       if (
         parent.scrollHeight > parent.clientHeight + 20 &&
         /(auto|scroll|overlay)/.test(overflow)
       ) {
-        return parent.scrollHeight - parent.clientHeight - parent.scrollTop <= 120;
+        scrollable = parent;
+        if (parent.querySelectorAll(`${S.user}, ${S.assistant}`).length > 1) {
+          chatScroller = parent;
+          break;
+        }
       }
       parent = parent.parentElement;
     }
-    const scroll = document.scrollingElement || document.documentElement;
+    const scroll = chatScroller || scrollable || document.scrollingElement || document.documentElement;
     return scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 120;
   }
 
@@ -954,7 +960,11 @@
     }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
 
     window.addEventListener('resize', position);
-    window.addEventListener('scroll', position, true);
+    window.addEventListener('scroll', () => {
+      position();
+      scheduleRefresh();
+      scheduleSettle();
+    }, true);
     window.addEventListener('pageshow', scheduleRefresh);
     window.addEventListener('focus', scheduleRefresh);
     document.addEventListener('visibilitychange', () => {
