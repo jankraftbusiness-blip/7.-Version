@@ -6,31 +6,32 @@
 
 /* Container für Label + Ring, sitzt rechtsbündig über der Textbox */
 .tx-root {
-  --tx-surface: #262624;
-  --tx-foreground: #e8e6e0;
+  --tx-surface: #262624; /* Standard-Hintergrundfarbe, content.js überschreibt sie je nach Seite */
+  --tx-foreground: #e8e6e0; /* Standard-Textfarbe, content.js überschreibt sie je nach Seite */
   position: fixed; /* bleibt an Ort und Stelle, egal wie die Seite scrollt */
   z-index: 2147483000; /* liegt über allen Elementen der Chat-Seite */
-  box-sizing: border-box;
+  box-sizing: border-box; /* Padding zählt zur Breite dazu, die content.js setzt */
   display: flex; /* ordnet Label und Ring nebeneinander an */
   align-items: center; /* zentriert beide vertikal zueinander */
-  justify-content: flex-end;
+  justify-content: flex-end; /* schiebt Label und Ring an den rechten Rand */
   gap: 8px; /* Abstand zwischen Label und Ring */
   padding: 3px 6px; /* gibt Hintergrundfläche um Anzeige und Ring */
   background: var(--tx-surface); /* passt sich der Oberfläche der KI-Eingabe an */
   color: var(--tx-foreground); /* kontrastierender Text auf heller und dunkler Fläche */
   border-radius: 8px; /* weiche Ecken passend zur Eingabefläche */
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16); /* hebt die Fläche dezent vom Seiteninhalt ab */
-  transform: none;
+  transform: none; /* verhindert, dass Seiten-Styles das Element verschieben */
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; /* neutrale Systemschrift */
   font-size: 12px; /* kleine, unaufdringliche Schrift */
-  font-weight: 600;
+  font-weight: 600; /* leicht fett, damit die Zahlen gut lesbar sind */
   line-height: 1; /* verhindert zusätzliche Zeilenhöhe */
   user-select: none; /* Zahlen sollen beim Klicken nicht markiert werden */
 }
 
+/* Gemini-Startseite: keine eigene Fläche, die Anzeige schwebt frei */
 .tx-root.tx-transparent {
-  background: transparent;
-  box-shadow: none;
+  background: transparent; /* kein Hintergrund, die Seite scheint durch */
+  box-shadow: none; /* kein Schatten ohne Fläche */
 }
 
 /* hidden-Attribut muss stärker sein als display:flex von oben */
@@ -43,25 +44,28 @@
 .tx-label {
   display: flex; /* Draft und Chat in einer Zeile */
   gap: 12px; /* Abstand zwischen Draft- und Chat-Teil */
-  color: #ffffff;
-  font-weight: 700;
+  color: var(--tx-foreground); /* folgt der Seite: dunkel auf hell, hell auf dunkel (vorher fest weiß) */
+  font-weight: 700; /* fett, damit die Zahlen auffallen */
   white-space: nowrap; /* kein Zeilenumbruch im Label */
   font-variant-numeric: tabular-nums; /* gleich breite Ziffern, damit nichts springt */
 }
 
+/* Ein Teil des Labels, also "Draft ~0" oder "Chat ~1.223 / 200.000" */
 .tx-l-draft,
 .tx-l-chat {
-  display: inline-flex;
-  gap: 4px;
+  display: inline-flex; /* Name und Wert in einer Zeile */
+  gap: 4px; /* Abstand zwischen Name und Wert */
 }
 
+/* Wörter "Draft" und "Chat" */
 .tx-label .tx-label-name {
-  color: #9a9a9a;
-  font-weight: 600;
+  color: #9a9a9a; /* gedämpftes Grau, damit die Zahlen im Vordergrund stehen */
+  font-weight: 600; /* etwas leichter als die Zahlen */
 }
 
+/* Zahlen hinter den Wörtern */
 .tx-label .tx-label-value {
-  color: #ffffff;
+  color: inherit; /* übernimmt die Farbe des Labels, wird so bei Warnung gelb oder rot */
 }
 
 /* Label wird gelb, wenn der Kontext fast voll ist */
@@ -72,11 +76,6 @@
 /* Label wird rot, wenn der Kontext kritisch voll ist */
 .tx-label.tx-crit {
   color: #e5584f; /* deutliches Rot für kritischen Füllstand */
-}
-
-.tx-label.tx-warn .tx-label-value,
-.tx-label.tx-crit .tx-label-value {
-  color: #ffffff;
 }
 
 /* Klickbarer Knopf, der den Ring enthält */
@@ -148,7 +147,7 @@
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45); /* weicher Schatten für Tiefe */
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; /* gleiche Schrift wie das Label */
   font-size: 12px; /* kompakte Schriftgröße */
-  font-weight: 400;
+  font-weight: 400; /* normales Gewicht, Titel setzen sich selbst fett ab */
   line-height: 1.35; /* gut lesbarer Zeilenabstand */
 }
 
@@ -163,13 +162,13 @@
 
 /* Titel einer Zeile, z. B. "Kontextfenster" */
 .tx-title {
-  color: var(--tx-foreground);
+  color: var(--tx-foreground); /* volle Textfarbe, damit der Titel heraussticht */
   font-weight: 600; /* leicht fett */
 }
 
 /* Wert rechts, z. B. "~265,5k / 1M (27 %)" */
 .tx-val {
-  color: color-mix(in srgb, var(--tx-foreground) 72%, var(--tx-surface));
+  color: color-mix(in srgb, var(--tx-foreground) 72%, var(--tx-surface)); /* etwas gedämpfter als der Titel */
   font-variant-numeric: tabular-nums; /* gleich breite Ziffern */
   white-space: nowrap; /* Wert bleibt in einer Zeile */
 }
@@ -203,7 +202,7 @@
 /* Kleine Nebenzeile unter Balken, z. B. Reset-Zeit */
 .tx-sub {
   margin-top: 6px; /* Abstand zum Balken darüber */
-  color: color-mix(in srgb, var(--tx-foreground) 58%, var(--tx-surface));
+  color: color-mix(in srgb, var(--tx-foreground) 58%, var(--tx-surface)); /* deutlich gedämpft, da Nebeninfo */
   font-size: 11px; /* kleiner als der Haupttext */
 }
 
@@ -217,7 +216,7 @@
 /* Abschnittsüberschrift, z. B. "Nutzungslimits des Plans" */
 .tx-section {
   margin: 8px 0 8px; /* Abstand um die Überschrift */
-  color: color-mix(in srgb, var(--tx-foreground) 62%, var(--tx-surface));
+  color: color-mix(in srgb, var(--tx-foreground) 62%, var(--tx-surface)); /* gedämpft, aber lesbar */
   font-size: 11px; /* klein */
 }
 
@@ -231,7 +230,7 @@
   margin-top: 4px; /* kleiner Abstand nach oben */
   padding: 6px 8px; /* Innenabstand der Hinweisbox */
   background: rgba(75, 139, 245, 0.12); /* zartes blaues Feld */
-  color: #a9c6f8; /* hellblauer Text */
+  color: color-mix(in srgb, #4b8bf5 55%, var(--tx-foreground)); /* bläulicher Text, auf hellen und dunklen Flächen lesbar (vorher festes Hellblau) */
   border-radius: 6px; /* leicht abgerundete Ecken */
   font-size: 11px; /* klein */
 }
@@ -243,7 +242,7 @@
   padding: 2px 0; /* kleiner vertikaler Klickbereich */
   border: none; /* keine Umrandung */
   background: transparent; /* kein Hintergrund */
-  color: color-mix(in srgb, var(--tx-foreground) 72%, var(--tx-surface));
+  color: color-mix(in srgb, var(--tx-foreground) 72%, var(--tx-surface)); /* gedämpft, wird beim Überfahren voll */
   font: inherit; /* übernimmt Schrift der Karte */
   text-align: left; /* linksbündig wie im Vorbild */
   text-decoration: underline; /* Unterstreichung als Link-Hinweis */
@@ -271,7 +270,7 @@
 
 /* Name in der Aufschlüsselung */
 .tx-line-k {
-  color: color-mix(in srgb, var(--tx-foreground) 62%, var(--tx-surface));
+  color: color-mix(in srgb, var(--tx-foreground) 62%, var(--tx-surface)); /* gedämpft, der Wert soll auffallen */
 }
 
 /* Wert in der Aufschlüsselung */
@@ -313,7 +312,7 @@
   background: color-mix(in srgb, var(--tx-foreground) 9%, var(--tx-surface)); /* leicht abgesetzte Schaltfläche */
   color: var(--tx-foreground); /* kontrastierender Text */
   font: inherit; /* übernimmt Schrift der Karte */
-  font-size: 11px; /* kleine Schrift */
+  font-size: 11px; /* kleine Schrift, überschreibt die Größe aus "font: inherit" */
   cursor: pointer; /* zeigt die Klickbarkeit an */
 }
 

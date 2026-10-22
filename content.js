@@ -168,9 +168,17 @@
     if (!text) return 0;
     let cpt = E.codeCharsPerToken;
     if (!isCode) cpt = looksGerman(text) ? E.germanCharsPerToken : E.englishCharsPerToken;
+    // Breite Zeichen (CJK, Emoji) zählen mit eigenem Faktor. Emoji bestehen aus zwei UTF-16-Einheiten,
+    // deshalb werden die Einheiten gezählt und nicht nur die Zeichen, sonst würde je Emoji eins zu viel gezählt.
     let wide = 0;
-    for (const ch of text) if (ch.charCodeAt(0) > 0x2fff) wide++;
-    return Math.ceil((text.length - wide) / cpt + wide * 1.2);
+    let wideUnits = 0;
+    for (const ch of text) {
+      if (ch.codePointAt(0) > 0x2fff) {
+        wide++;
+        wideUnits += ch.length;
+      }
+    }
+    return Math.ceil((text.length - wideUnits) / cpt + wide * 1.2);
   }
   function hash(text) {
     let value = 0x811c9dc5;
@@ -203,10 +211,18 @@
     const users = outermost(qsa(S.user));
     const asst = outermost(qsa(S.assistant));
     const userSet = new Set(users);
-    const messages = users.concat(asst).sort((a, b) => {
+    const all = users.concat(asst).sort((a, b) => {
       if (a === b) return 0;
       return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
     });
+    // Eine Antwort, die gerade noch streamt, wird nur live mitgezählt und NICHT gespeichert.
+    // Ihr Schlüssel hängt am Text, und der ist mitten im Streaming noch unvollständig.
+    // Würde er schon jetzt gespeichert, entstünde nach dem Neuaufbau der Seite (Scrollen,
+    // Neuladen) ein zweiter Eintrag für dieselbe Nachricht und alles würde doppelt gezählt.
+    const lastEl = all[all.length - 1];
+    const liveEl = S.streaming && qs(S.streaming) && lastEl && !userSet.has(lastEl) ? lastEl : null;
+    // Leere Elemente (Antwort-Hülle vor dem ersten Wort) zählen noch nicht als Nachricht.
+    const messages = all.filter((el) => el !== liveEl && (el.textContent || '').trim());
     const chat = getChat(chatKey());
     const occurrences = new Map();
     const measured = messages.map((el) => {
@@ -272,9 +288,17 @@
     touchChat(chatKey(), chat);
     let artifacts = 0;
     if (S.artifact) outermost(qsa(S.artifact)).forEach((el) => (artifacts += estimateTokens(txt(el), true)));
-    const prose = Object.values(chat.msgs).reduce((sum, message) => sum + message.prose, 0);
-    const code = Object.values(chat.msgs).reduce((sum, message) => sum + message.code, 0);
-    const lastVisible = measured[measured.length - 1] || null;
+    let liveProse = 0;
+    let liveCode = 0;
+    if (liveEl) {
+      const live = measureMessage(liveEl);
+      liveProse = live.prose;
+      liveCode = live.code;
+      lastAsst = liveProse + liveCode;
+    }
+    const prose = Object.values(chat.msgs).reduce((sum, message) => sum + message.prose, 0) + liveProse;
+    const code = Object.values(chat.msgs).reduce((sum, message) => sum + message.code, 0) + liveCode;
+    const lastVisible = liveEl ? { role: 'a', key: null, el: liveEl } : measured[measured.length - 1] || null;
     return {
       prose,
       code,
@@ -534,9 +558,38 @@
     settleTimer = setTimeout(onSettle, T.settleMs);
   }
 
+  // Sicherheitsnetz für Seiten, auf denen der Streaming-Selektor nicht greift: Die letzte Nachricht
+  // wird nach Ruhe der Seite unter dem Schlüssel ihres fertigen Textes abgelegt, damit sie nach einem
+  // Neuaufbau der Seite wiedererkannt wird und nicht doppelt zählt.
+  function rekeyLast() {
+    const chat = state.tx_chats[chatKey()];
+    const last = outermost(qsa(messageSel)).pop();
+    const rec = last && msgIdentity.get(last);
+    if (!chat || !rec || !last.textContent.trim()) return;
+    const finalId = `${rec.role}:${hash(last.textContent.slice(0, 80))}`;
+    if (finalId === rec.base) return;
+    const old = chat.msgs[rec.base];
+    if (old && !chat.msgs[`${rec.base}#1`]) {
+      const existing = chat.msgs[finalId];
+      chat.msgs[finalId] = existing
+        ? {
+            role: old.role,
+            prose: Math.max(existing.prose || 0, old.prose || 0),
+            code: Math.max(existing.code || 0, old.code || 0)
+          }
+        : old;
+      delete chat.msgs[rec.base];
+      const pendingKeys = chatChanges(chatKey());
+      if (pendingKeys.delete(rec.base)) pendingKeys.add(finalId);
+      scheduleChatPersist();
+    }
+    rec.base = finalId;
+  }
+
   function onSettle() {
     if (!loaded) return scheduleSettle();
     if (S.streaming && qs(S.streaming)) return scheduleSettle(); // Antwort läuft noch.
+    rekeyLast();
     const key = chatKey();
     const m = measureChat();
     const changes = chatChanges(key);
@@ -573,11 +626,12 @@
       const ctxBefore = Math.max(0, c.chatTotal - out);
       const cost = Math.round(ctxBefore + out * CFG.usage.outputWeight);
       const turn = { ts: Date.now(), p: P.id, chat: key, ctx: Math.round(c.chatTotal), out, cost };
-      state.tx_turns.push(turn);
+      // Nur über mutate schreiben (liest den Speicher neu, hängt an, setzt state). Ein zusätzliches
+      // push auf state.tx_turns würde den Turn kurzzeitig doppelt führen und andere Tabs übergehen.
       mutate('tx_turns', (arr) => {
         const a = (arr || []).concat([turn]);
         return a.slice(-CFG.usage.historyLimit);
-      });
+      }).then(scheduleRefresh);
     }
     changes.clear();
     scheduleRefresh();
@@ -639,6 +693,9 @@
   const RING_C = 2 * Math.PI * 9;
 
   function buildUI() {
+    // Nach einem Reload der Extension läuft das alte Skript auf der offenen Seite weiter und
+    // ließe seine Oberfläche stehen. Sonst gäbe es zwei Ringe übereinander.
+    qsa('.tx-ui').forEach((node) => node.remove());
     const root = h('div', 'tx-ui tx-root');
     root.hidden = true;
     const label = h('div', 'tx-label');
@@ -975,6 +1032,16 @@
       if (area !== 'local') return;
       if (ch.tx_settings) state.tx_settings = ch.tx_settings.newValue || {};
       if (ch.tx_calib) state.tx_calib = ch.tx_calib.newValue || {};
+      // Verlauf (andere Tabs, "Verlauf löschen" im Popup): sonst zeigen die Limits veraltete Werte.
+      if (ch.tx_turns) state.tx_turns = ch.tx_turns.newValue || [];
+      // Chats anderer Tabs übernehmen, sonst überschreibt dieser Tab sie beim nächsten Speichern.
+      // Der Chat dieses Tabs bleibt unangetastet, er ist hier immer der aktuellste Stand.
+      if (ch.tx_chats) {
+        const incoming = ch.tx_chats.newValue || {};
+        Object.keys(incoming).forEach((k) => {
+          if (k !== chatKey() && k !== migrateFrom) state.tx_chats[k] = incoming[k];
+        });
+      }
       scheduleRefresh();
     });
     scheduleSettle();

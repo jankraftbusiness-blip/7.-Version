@@ -122,7 +122,7 @@ window.TX_CONFIG = {
       id: 'gemini',
       name: 'Gemini',
       hosts: ['gemini.google.com'],
-      newChatPath: /^\/app\/?$/,
+      newChatPath: /^(\/u\/\d+)?\/app\/?$/, // auch mit Konto-Präfix, z. B. /u/1/app
       selectors: {
         input: 'rich-textarea .ql-editor, div.ql-editor[contenteditable="true"]',
         composer: 'input-area-v2, .input-area-container, form',
