@@ -69,15 +69,15 @@ window.TX_CONFIG = {
         streaming: '[data-is-streaming="true"]',
         model: '[data-testid="model-selector-dropdown"]'
       },
-      modelScan: /\\b(opus|sonnet|haiku|fable|mythos)\\b/i,
+      modelScan: /\b(opus|sonnet|haiku|fable|mythos)\b/i,
       models: [
-        { match: /fable\\s*5\\.1(?![\\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /fable\\s*5(?![.\\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /opus\\s*5(?:\\.5)?(?![.\\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /opus\\s*4\\.[678](?![\\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /sonnet\\s*5(?:\\.5)?(?![.\\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /sonnet\\s*4\\.6(?![\\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /haiku\\s*5\\.5(?![\\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' }
+        { match: /fable\s*5\.1(?![\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /fable\s*5(?![.\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /opus\s*5(?:\.5)?(?![.\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /opus\s*4\.[678](?![\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /sonnet\s*5(?:\.5)?(?![.\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /sonnet\s*4\.6(?![\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /haiku\s*5\.5(?![\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' }
       ],
       defaultContextWindow: 200000,
       defaultOffset: 3500, // Startwert für unsichtbare Tokens (System-Prompt, Tools, Memory).
@@ -113,11 +113,11 @@ window.TX_CONFIG = {
         streaming: '[data-talvt-turn-state="in_progress"], button[data-testid="stop-button"], button[aria-label*="Stop"]',
         model: 'button[data-testid="model-switcher-dropdown-button"]'
       },
-      modelScan: /\\b(gpt[- ]?\\d|thinking|instant|reasoning)\\b/i,
+      modelScan: /\b(gpt[- ]?\d|thinking|instant|reasoning)\b/i,
       models: [
-        { match: /\\bthinking\\b|reasoning/i, window: { plus: 256000, pro: 400000 }, src: 'Drittquelle · unbestätigt' },
-        { match: /\\bpro\\b/i, window: null, src: '' },
-        { match: /instant|auto|gpt[- ]?\\d/i, window: { free: 27000, plus: 54000, pro: 128000 }, src: 'Drittquelle · unbestätigt' }
+        { match: /\bthinking\b|reasoning/i, window: { plus: 256000, pro: 400000 }, src: 'Drittquelle · unbestätigt' },
+        { match: /\bpro\b/i, window: null, src: '' },
+        { match: /instant|auto|gpt[- ]?\d/i, window: { free: 27000, plus: 54000, pro: 128000 }, src: 'Drittquelle · unbestätigt' }
       ],
       defaultContextWindow: 128000,
       defaultOffset: 2500,
