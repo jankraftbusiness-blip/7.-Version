@@ -71,13 +71,13 @@ window.TX_CONFIG = {
       },
       modelScan: /\b(opus|sonnet|haiku|fable|mythos)\b/i,
       models: [
-        { match: /fable\s*5\.1(?![\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /fable\s*5(?![.\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /opus\s*5(?:\.5)?(?![.\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /opus\s*4\.[678](?![\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /sonnet\s*5(?:\.5)?(?![.\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /sonnet\s*4\.6(?![\d])/i, window: { pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
-        { match: /haiku\s*5\.5(?![\d])/i, window: { pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' }
+        { match: /fable\s*5\.1(?![\d])/i, window: { free: 1000000, pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /fable\s*5(?![.\d])/i, window: { free: 500000, pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /opus\s*5(?:\.5)?(?![.\d])/i, window: { free: 1000000, pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /opus\s*4\.[678](?![\d])/i, window: { free: 500000, pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /sonnet\s*5(?:\.5)?(?![.\d])/i, window: { free: 1000000, pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /sonnet\s*4\.6(?![\d])/i, window: { free: 500000, pro: 500000, max5: 500000, max20: 500000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' },
+        { match: /haiku\s*5\.5(?![\d])/i, window: { free: 1000000, pro: 1000000, max5: 1000000, max20: 1000000 }, src: 'Anthropic-Dokumentation · bezahlte Tarife' }
       ],
       defaultContextWindow: 200000,
       defaultOffset: 3500, // Startwert für unsichtbare Tokens (System-Prompt, Tools, Memory).
