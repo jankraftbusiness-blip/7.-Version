@@ -147,15 +147,70 @@
   }
 
   // ---------------------------------------------------- Einstellungen/Werte
+  // Erkennt konkrete Modellbezeichnungen. Allgemeine UI-Texte allein reichen nicht.
+  function detectModel() {
+    const candidates = [];
+    if (S.model) {
+      const selected = qs(S.model);
+      if (selected) candidates.push(txt(selected));
+    }
+    if (P.modelScan) {
+      let scope = findInput();
+      for (let i = 0; i < 6 && scope && scope.parentElement; i++) scope = scope.parentElement;
+      if (scope) {
+        scope.querySelectorAll('button, [role="button"], [role="combobox"]').forEach((el) => {
+          if (el.closest('.tx-ui')) return;
+          if (S.user && el.closest(S.user)) return;
+          if (S.assistant && el.closest(S.assistant)) return;
+          candidates.push(txt(el));
+        });
+      }
+    }
+    for (const raw of candidates) {
+      const text = String(raw || '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 120 || !P.modelScan || !P.modelScan.test(text)) continue;
+      return { id: text.toLowerCase().replace(/\s+/g, ' ').trim(), label: text.slice(0, 48), fullLabel: text };
+    }
+    return null;
+  }
+
+  function modelWindow(model, planId) {
+    if (!model) return null;
+    const hit = (P.models || []).find((entry) => entry.match.test(model.fullLabel || model.label));
+    if (!hit || hit.window === null || hit.window === undefined) return null;
+    const value = typeof hit.window === 'object' ? hit.window[planId] : hit.window;
+    if (!Number.isFinite(value) || value <= 0) return null;
+    let src = hit.src || 'Modelltabelle';
+    if (P.id === 'claude' && planId === 'free') src += ' · Free-Fenster nicht offiziell bestätigt';
+    return { win: value, src, known: !/unbestätigt|nicht offiziell bestätigt/i.test(src) };
+  }
+
+  function resolveWindow(settings, plan, model, calib) {
+    const manual = Number(settings.contextWindow) || 0;
+    if (settings.windowMode === 'manual' && manual) return { win: manual, src: 'Manuell festgelegt', known: true };
+    const fromModel = modelWindow(model, plan.id);
+    if (fromModel) return fromModel;
+    const learned = median((calib.windows || {})[model ? model.id : '_default']);
+    if (learned) return { win: Math.round(learned), src: 'Aus Kalibrierung gelernt', known: false };
+    if (manual) return { win: manual, src: 'Fallback aus den Einstellungen', known: false };
+    return {
+      win: Number(plan.contextWindow) || Number(P.defaultContextWindow) || 200000,
+      src: model ? 'Modell erkannt, Kontextfenster nicht verifiziert; Schätzwert' : 'Modell nicht erkannt; Standard-Schätzwert',
+      known: false
+    };
+  }
+
   function cfgNow() {
     const s = state.tx_settings[P.id] || {};
-    const plan = P.plans.find((p) => p.id === (s.plan || P.defaultPlan)) || P.plans[0];
+    const planId = s.planExplicit === false ? P.defaultPlan : (s.plan || P.defaultPlan);
+    const plan = P.plans.find((p) => p.id === planId) || P.plans[0];
     const calib = state.tx_calib[P.id] || {};
-    const win = Number(s.contextWindow) || plan.contextWindow || P.defaultContextWindow;
+    const model = detectModel();
+    const winInfo = resolveWindow(s, plan, model, calib);
     const manualOffset = s.offset !== undefined && s.offset !== '' && s.offset !== null ? Number(s.offset) : null;
     const calOffset = median(calib.offsets);
     const offset = manualOffset !== null ? manualOffset : calOffset !== null ? calOffset : P.defaultOffset;
-    return { plan, win, offset, offsetCalibrated: manualOffset !== null || calOffset !== null, calib };
+    return { plan, win: winInfo.win, winInfo, model, offset, offsetCalibrated: manualOffset !== null || calOffset !== null, calib };
   }
 
   // ------------------------------------------------------ Token-Schätzung
@@ -865,7 +920,8 @@
         'div',
         'tx-sub',
         `Spanne ~${fmtK(c.low)}–${fmtK(c.high)} · ${c.calibrated ? 'kalibriert' : 'geschätzt'}`
-      )
+      ),
+      h('div', 'tx-sub', `Fenster: ${c.cfg.winInfo.src}`)
     );
 
     p.append(h('div', 'tx-sep'));

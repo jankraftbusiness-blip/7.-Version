@@ -36,6 +36,15 @@
       });
       sel.value = s.plan || p.defaultPlan;
 
+      const mode = document.createElement('select');
+      [['auto', 'Automatisch (Modell / Schätzwert)'], ['manual', 'Manuell festlegen']].forEach(([v, t]) => {
+        const o = document.createElement('option');
+        o.value = v;
+        o.textContent = t;
+        mode.append(o);
+      });
+      mode.value = s.windowMode || 'auto';
+
       const win = document.createElement('input');
       win.type = 'number';
       win.min = '1000';
@@ -49,21 +58,27 @@
       off.value = s.offset === undefined || s.offset === null ? '' : s.offset;
 
       field('Tarif', sel);
-      field('Kontextfenster', win);
+      field('Fenster-Erkennung', mode);
+      field('Kontextfenster (Fallback / manuell)', win);
       field('Unsichtbar (Offset)', off);
       wrap.append(fs);
 
-      const save = async () => {
+      const save = async (planChanged = false) => {
         const cur = (await get(['tx_settings'])).tx_settings || {};
+        const previous = cur[p.id] || {};
         cur[p.id] = {
+          ...previous,
           plan: sel.value,
+          planExplicit: planChanged ? true : (previous.planExplicit ?? Boolean(previous.plan)),
+          windowMode: mode.value,
           contextWindow: win.value ? Number(win.value) : undefined,
           offset: off.value === '' ? undefined : Number(off.value)
         };
         await set({ tx_settings: cur });
         say('Gespeichert');
       };
-      [sel, win, off].forEach((el) => el.addEventListener('change', save));
+      sel.addEventListener('change', () => save(true));
+      [mode, win, off].forEach((el) => el.addEventListener('change', () => save(false)));
     });
 
     document.getElementById('reset-calib').addEventListener('click', async () => {
